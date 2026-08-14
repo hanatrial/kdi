@@ -208,6 +208,7 @@ function renderNewPoForm(){
   document.getElementById('newStoreInline').style.display = 'none';
   document.getElementById('newStoreName').value = '';
   document.getElementById('newStoreLoc').value = '';
+  onPoStoreChange();
 }
 
 document.getElementById('newStoreToggle').addEventListener('click', ()=>{
@@ -231,7 +232,74 @@ document.getElementById('newStoreSave').addEventListener('click', async ()=>{
   document.getElementById('newStoreInline').style.display = 'none';
   document.getElementById('newStoreName').value = '';
   document.getElementById('newStoreLoc').value = '';
+  onPoStoreChange();
 });
+
+/* ---------- Per-store item templates ---------- */
+async function getStoreTemplate(storeId){
+  if(!storeId) return null;
+  const doc = await db.collection('templates').doc(storeId).get();
+  return doc.exists ? doc.data().items : null;
+}
+async function saveStoreTemplate(storeId, items){
+  await db.collection('templates').doc(storeId).set({items});
+}
+
+function fillItemRowsFrom(items){
+  const tbody = document.getElementById('itemRows');
+  tbody.innerHTML = '';
+  newPoItemRowCount = 0;
+  items.forEach(it=>{
+    addItemRow();
+    const tr = tbody.lastElementChild;
+    tr.querySelector('.item-name').value = it.name || '';
+    tr.querySelector('.item-barcode').value = it.barcode || '';
+    if(it.qty!=null) tr.querySelector('.item-qty').value = it.qty;
+  });
+}
+
+function currentItemRowsData(){
+  return [...document.getElementById('itemRows').children].map(r=>({
+    name: r.querySelector('.item-name').value.trim(),
+    barcode: r.querySelector('.item-barcode').value.trim()
+  })).filter(it=>it.name);
+}
+
+function renderTemplateRow(storeId, template){
+  const el = document.getElementById('templateRow');
+  if(!storeId){ el.innerHTML = ''; return; }
+  const parts = [];
+  if(template && template.length){
+    parts.push(`<span>📋 Template loaded: ${template.length} item(s) for this store.</span>`);
+    parts.push(`<button type="button" class="btn secondary small" id="reloadTemplateBtn">Reload template</button>`);
+  } else {
+    parts.push(`<span>No saved item template for this store yet.</span>`);
+  }
+  parts.push(`<button type="button" class="btn secondary small" id="saveTemplateBtn">Save current items as template</button>`);
+  el.innerHTML = parts.join(' ');
+  const reloadBtn = document.getElementById('reloadTemplateBtn');
+  if(reloadBtn) reloadBtn.addEventListener('click', ()=>{
+    if(template && template.length) fillItemRowsFrom(template);
+  });
+  document.getElementById('saveTemplateBtn').addEventListener('click', async ()=>{
+    const items = currentItemRowsData();
+    if(items.length===0){ alert('Add at least one item row before saving as a template.'); return; }
+    await saveStoreTemplate(storeId, items);
+    const t = await getStoreTemplate(storeId);
+    renderTemplateRow(storeId, t);
+    alert(`Saved ${items.length} item(s) as the template for this store.`);
+  });
+}
+
+async function onPoStoreChange(){
+  const storeId = document.getElementById('poStore').value;
+  const template = await getStoreTemplate(storeId);
+  renderTemplateRow(storeId, template);
+  if(template && template.length){
+    fillItemRowsFrom(template);
+  }
+}
+document.getElementById('poStore').addEventListener('change', onPoStoreChange);
 
 function addItemRow(){
   const tbody = document.getElementById('itemRows');
