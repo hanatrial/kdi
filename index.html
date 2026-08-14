@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kendari Fulfillment Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">K</div>
+      <div class="brand-text">
+        <div class="brand-name">Kendari</div>
+        <div class="brand-sub">Fulfillment</div>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab-btn active" data-view="dashboard"><span class="ico">◧</span>Dashboard</button>
+      <button class="tab-btn" data-view="newpo"><span class="ico">＋</span>New PO</button>
+      <button class="tab-btn" data-view="pos"><span class="ico">▤</span>All POs</button>
+      <button class="tab-btn" data-view="distcheck"><span class="ico">⇄</span>Distributor Sales</button>
+      <button class="tab-btn" data-view="stockcheck"><span class="ico">📦</span>Stock Check</button>
+      <button class="tab-btn" data-view="stores"><span class="ico">◫</span>Stores</button>
+    </nav>
+    <div class="sidebar-foot">Data is stored locally in this browser.</div>
+  </aside>
+
+  <header class="mobile-topbar">
+    <div class="brand-mark">K</div>
+    <div class="brand-name">Kendari Fulfillment</div>
+  </header>
+
+  <nav class="mobile-tabbar">
+    <button class="tab-btn active" data-view="dashboard"><span class="ico">◧</span><span>Dashboard</span></button>
+    <button class="tab-btn" data-view="newpo"><span class="ico">＋</span><span>New PO</span></button>
+    <button class="tab-btn" data-view="pos"><span class="ico">▤</span><span>All POs</span></button>
+    <button class="tab-btn" data-view="distcheck"><span class="ico">⇄</span><span>Dist. Sales</span></button>
+    <button class="tab-btn" data-view="stockcheck"><span class="ico">📦</span><span>Stock</span></button>
+    <button class="tab-btn" data-view="stores"><span class="ico">◫</span><span>Stores</span></button>
+  </nav>
+
+  <main class="content">
+
+    <!-- DASHBOARD -->
+    <section id="view-dashboard" class="view active">
+      <div class="page-head">
+        <h1>Dashboard</h1>
+        <p class="page-sub">Order fulfillment across all distributors</p>
+      </div>
+      <div class="stat-row" id="statRow"></div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Purchase Orders</h2>
+          <div class="filters">
+            <select id="filterStore"><option value="">All stores</option></select>
+            <select id="filterStatus">
+              <option value="">All statuses</option>
+              <option value="complete">Fulfilled 100%</option>
+              <option value="partial">Partial</option>
+              <option value="none">Not started</option>
+            </select>
+          </div>
+        </div>
+        <div id="poList" class="po-list"></div>
+      </div>
+    </section>
+
+    <!-- STORES -->
+    <section id="view-stores" class="view">
+      <div class="page-head">
+        <h1>Stores</h1>
+        <p class="page-sub">Manage your distributor / store list</p>
+      </div>
+      <div class="panel">
+        <form id="storeForm" class="inline-form">
+          <input type="text" id="storeName" placeholder="Store / distributor name" required>
+          <input type="text" id="storeLoc" placeholder="Location (optional)">
+          <button type="submit" class="btn primary">+ Add Store</button>
+        </form>
+        <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Location</th><th>POs</th><th></th></tr></thead>
+          <tbody id="storeTable"></tbody>
+        </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h2>Bulk import stores</h2></div>
+        <p class="step-hint">Paste one store name per line, then click Import. Duplicates (matching an existing name) are skipped.</p>
+        <textarea id="bulkStoreInput" class="bulk-textarea" rows="6" placeholder="CV. Alaska Jaya Abadi&#10;Marina Swalayan ( CV. Marina Sukses Abadi )&#10;PT. MATAHARI PUTRA PRIMA TBK. ( The Park Kendari )"></textarea>
+        <div class="form-actions">
+          <button type="button" id="bulkStoreImport" class="btn primary">Import list</button>
+        </div>
+        <div id="bulkStoreResult" class="step-hint"></div>
+      </div>
+    </section>
+
+    <!-- NEW PO -->
+    <section id="view-newpo" class="view">
+      <div class="page-head">
+        <h1>New Purchase Order</h1>
+        <p class="page-sub">Log an incoming order to track against delivery</p>
+      </div>
+      <div class="panel">
+        <form id="poForm">
+          <div class="form-row">
+            <label>Store
+              <div class="store-select-row">
+                <select id="poStore" required></select>
+                <button type="button" class="btn secondary small" id="newStoreToggle">+ New</button>
+              </div>
+              <div id="newStoreInline" class="new-store-inline" style="display:none;">
+                <input type="text" id="newStoreName" placeholder="Store / distributor name">
+                <input type="text" id="newStoreLoc" placeholder="Location (optional)">
+                <button type="button" class="btn primary small" id="newStoreSave">Add</button>
+                <button type="button" class="btn secondary small" id="newStoreCancel">Cancel</button>
+              </div>
+            </label>
+            <label>Order Date
+              <input type="date" id="poDate" required>
+            </label>
+            <label>PO Reference (optional)
+              <input type="text" id="poRef" placeholder="e.g. PO-2026-014">
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="upload-label">Upload PO file (PDF or photo)
+              <div class="upload-box" id="uploadBox">
+                <input type="file" id="poFile" accept="application/pdf,image/*">
+                <span id="uploadHint">Click to choose a file, or drag one here</span>
+              </div>
+            </label>
+            <div id="poFilePreview" class="file-preview"></div>
+          </div>
+          <div id="autoExtractRow" class="auto-extract-row" style="display:none;">
+            <button type="button" id="autoExtractBtn" class="btn secondary">🔍 Try auto-extract items from file</button>
+            <span id="autoExtractStatus" class="step-hint" style="margin:0;"></span>
+          </div>
+
+          <h3>Items Ordered</h3>
+
+          <details class="paste-items-box">
+            <summary>Paste a list of items instead of typing rows one by one</summary>
+            <p class="step-hint">One item per line, formatted as <code>Item name | Barcode | Qty</code> (leave barcode blank if unknown, e.g. <code>ADEM SARI CHING KU HERBAL LEMON 320 ML | 0110156 | 2</code>). This replaces the rows below.</p>
+            <textarea id="pasteItemsInput" class="bulk-textarea" rows="6" placeholder="Item name | Barcode | Qty"></textarea>
+            <div class="form-actions"><button type="button" class="btn secondary" id="pasteItemsParse">Fill rows from pasted list</button></div>
+            <div id="pasteItemsStatus" class="step-hint"></div>
+          </details>
+
+          <div class="table-scroll">
+          <table class="data-table" id="itemTable">
+            <thead><tr><th>Item name</th><th>Barcode</th><th>Qty ordered</th><th></th></tr></thead>
+            <tbody id="itemRows"></tbody>
+          </table>
+          </div>
+          <button type="button" id="addItemRow" class="btn secondary">+ Add item</button>
+
+          <div class="form-actions">
+            <button type="submit" class="btn primary">Save Purchase Order</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- ALL POs -->
+    <section id="view-pos" class="view">
+      <div class="page-head">
+        <h1>All Purchase Orders</h1>
+        <p class="page-sub">Full order history</p>
+      </div>
+      <div class="panel">
+        <div id="poListFull" class="po-list"></div>
+      </div>
+    </section>
+
+    <!-- DISTRIBUTOR SALES CHECK -->
+    <section id="view-distcheck" class="view">
+      <div class="page-head">
+        <h1>Distributor Sales</h1>
+        <p class="page-sub">Cross-check what arrived at the store against a distributor's sales export, matched by barcode</p>
+      </div>
+
+      <div class="panel">
+        <label style="max-width:420px;">Select a Purchase Order
+          <select id="dcPoSelect"></select>
+        </label>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h2>Cross-check vs Distributor Sales</h2></div>
+        <p class="step-hint">Import an Excel/CSV file with a <strong>Barcode</strong> + qty column, or a raw distributor sales journal (customer, product name, quantity columns like <em>NAMACUSTOMER / NAMA / QUANTITY2</em>). Rows are auto-filtered to this PO's store if a customer column exists. Items are matched by barcode, then by a remembered name, then by exact name — anything left is auto-filled with the closest guess and flagged <span class="badge guess">🔍 Guessed</span> so you can check/fix it before saving. Correcting a wrong barcode/name pair once is remembered for next time.</p>
+        <div class="import-row">
+          <input type="file" id="dcSalesFile" accept=".xlsx,.xls,.csv">
+          <button type="button" class="btn primary" id="dcSalesImport">Import file</button>
+          <span id="dcSalesStatus" class="step-hint" style="margin:0;"></span>
+        </div>
+        <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Item</th><th>Barcode</th><th>Ordered</th><th>Received at store</th><th>Distributor sales qty</th><th>Match?</th></tr></thead>
+          <tbody id="dcSalesRows"></tbody>
+        </table>
+        </div>
+        <div class="form-actions"><button type="button" class="btn secondary" id="dcSalesSave">Save table</button></div>
+        <div id="dcSalesReview"></div>
+      </div>
+    </section>
+
+    <!-- DISTRIBUTOR STOCK CHECK -->
+    <section id="view-stockcheck" class="view">
+      <div class="page-head">
+        <h1>Stock Check</h1>
+        <p class="page-sub">Flag items that are out of stock (OOS) at the distributor, matched by barcode</p>
+      </div>
+
+      <div class="panel">
+        <label style="max-width:420px;">Select a Purchase Order
+          <select id="scPoSelect"></select>
+        </label>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h2>Distributor Stock Check</h2></div>
+        <p class="step-hint">Import an Excel/CSV file with columns for <strong>Barcode</strong> and <strong>Stock on hand</strong>. Used to flag items that are out of stock (OOS) at the distributor. Same matching rules as the Distributor Sales tab — unmatched rows are auto-filled with the closest guess and flagged <span class="badge guess">🔍 Guessed</span> for you to check.</p>
+        <div class="import-row">
+          <input type="file" id="scStockFile" accept=".xlsx,.xls,.csv">
+          <button type="button" class="btn primary" id="scStockImport">Import file</button>
+          <span id="scStockStatus" class="step-hint" style="margin:0;"></span>
+        </div>
+        <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Item</th><th>Barcode</th><th>Ordered</th><th>Distributor stock on hand</th><th>Status</th></tr></thead>
+          <tbody id="scStockRows"></tbody>
+        </table>
+        </div>
+        <div class="form-actions"><button type="button" class="btn secondary" id="scStockSave">Save table</button></div>
+        <div id="scStockReview"></div>
+      </div>
+    </section>
+
+    <!-- PO DETAIL / VALIDATION MODAL -->
+    <div id="poModal" class="modal-overlay">
+      <div class="modal">
+        <button class="modal-close" id="poModalClose">&times;</button>
+        <div id="poModalBody"></div>
+      </div>
+    </div>
+
+  </main>
+</div>
+<script src="app.js?v=7"></script>
+</body>
+</html>
