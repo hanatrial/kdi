@@ -103,6 +103,32 @@ function storeName(id){
   return s ? s.name : '(unknown store)';
 }
 
+/* ---------- Carton/pcs qty parsing ---------- */
+// Guesses units-per-carton from a pack-size hint in the item name, e.g.
+// "HI LO SCHOOL CHOCOLATE 12DX250G" -> 12 (12 x 250g per dus/carton).
+function guessUnitsPerCarton(name){
+  const m = String(name||'').match(/(\d+)\s*DX/i);
+  return m ? Number(m[1]) : null;
+}
+
+// Parses a qty typed as plain pcs ("24") or as cartons ("1Q", "1 ctn", "1 dus", "1 box").
+// Returns {pcs, cartons?} on success, or {error} if it can't be parsed / needs a carton size.
+function parseQtyInput(raw, unitsPerCarton){
+  const str = String(raw==null?'':raw).trim();
+  if(str === '') return {pcs: 0};
+  const cartonMatch = str.match(/^(\d+(?:[.,]\d+)?)\s*(q|ctn|dus|box)$/i);
+  if(cartonMatch){
+    if(!unitsPerCarton || unitsPerCarton<=0) return {error:'Set units/carton for this item first'};
+    const cartons = parseFloat(cartonMatch[1].replace(',','.'));
+    return {pcs: Math.round(cartons*unitsPerCarton), cartons};
+  }
+  const pcsMatch = str.match(/^(\d+(?:[.,]\d+)?)$/);
+  if(pcsMatch){
+    return {pcs: Math.round(parseFloat(pcsMatch[1].replace(',','.')))};
+  }
+  return {error:'Use pcs (e.g. 24) or cartons (e.g. 1Q / 1ctn)'};
+}
+
 /* ---------- Navigation ---------- */
 document.querySelectorAll('.tab-btn').forEach(btn=>{
   btn.addEventListener('click', ()=> switchView(btn.dataset.view));
@@ -706,9 +732,10 @@ function openPoModal(poId){
     <div style="margin-bottom:10px;">
       <button type="button" class="btn secondary small" id="fillAllOrdered">Fill all as ordered</button>
     </div>
+    <p class="step-hint">Received accepts pcs (e.g. <code>24</code>) or cartons (e.g. <code>1Q</code> / <code>1ctn</code>) — cartons convert using "Units/ctn" for that item, which is guessed from the item name but editable.</p>
     <div class="table-scroll">
     <table class="data-table">
-      <thead><tr><th>Item</th><th>Barcode</th><th>Ordered</th><th>Received</th><th>Arrived</th></tr></thead>
+      <thead><tr><th>Item</th><th>Barcode</th><th>Ordered</th><th>Units/ctn</th><th>Received</th><th>= pcs</th><th>Arrived</th></tr></thead>
       <tbody id="validateRows"></tbody>
     </table>
     </div>
@@ -723,6 +750,7 @@ function openPoModal(poId){
   const tbody = body.querySelector('#validateRows');
 
   items.forEach(it=>{
+    const upc = it.unitsPerCarton || guessUnitsPerCarton(it.name) || '';
     const tr = document.createElement('tr');
     tr.className = 'validate-row';
     tr.dataset.itemId = it.id;
@@ -730,19 +758,35 @@ function openPoModal(poId){
       <td>${escapeHtml(it.name)}</td>
       <td>${escapeHtml(it.barcode||'—')}</td>
       <td>${it.qtyOrdered}</td>
-      <td><input type="number" class="qty-input v-qty" min="0" max="${it.qtyOrdered*10}" value="${it.qtyReceived}"></td>
+      <td><input type="number" class="qty-input v-upc" min="0" step="1" style="width:70px;" value="${upc}"></td>
+      <td><input type="text" class="qty-input v-qty" style="width:90px;" placeholder="e.g. 24 or 1Q" value="${it.qtyReceivedRaw!=null ? it.qtyReceivedRaw : (it.qtyReceived||'')}"></td>
+      <td class="v-pcs-out step-hint" style="margin:0;">${it.qtyReceived||0} pcs</td>
       <td><input type="checkbox" class="v-arrived" ${it.arrived?'checked':''}></td>
     `;
     tbody.appendChild(tr);
 
     const qtyInput = tr.querySelector('.v-qty');
+    const upcInput = tr.querySelector('.v-upc');
+    const pcsOut = tr.querySelector('.v-pcs-out');
     const arrivedBox = tr.querySelector('.v-arrived');
-    // auto-check "arrived" when qty received >= ordered, keep manual override otherwise
-    qtyInput.addEventListener('input', ()=>{
-      if(Number(qtyInput.value) >= it.qtyOrdered && Number(qtyInput.value) > 0){
-        arrivedBox.checked = true;
+
+    function recompute(){
+      const parsed = parseQtyInput(qtyInput.value, Number(upcInput.value)||0);
+      if(parsed.error){
+        pcsOut.textContent = parsed.error;
+        pcsOut.style.color = 'var(--danger, #e0453d)';
+        return null;
       }
-    });
+      pcsOut.style.color = '';
+      pcsOut.textContent = parsed.cartons!=null
+        ? `${parsed.pcs} pcs (${parsed.cartons} ctn × ${upcInput.value})`
+        : `${parsed.pcs} pcs`;
+      if(parsed.pcs >= it.qtyOrdered && parsed.pcs > 0) arrivedBox.checked = true;
+      return parsed.pcs;
+    }
+    qtyInput.addEventListener('input', recompute);
+    upcInput.addEventListener('input', recompute);
+    recompute();
   });
 
   body.querySelector('#fillAllOrdered').addEventListener('click', ()=>{
@@ -750,6 +794,7 @@ function openPoModal(poId){
       const itemId = tr.dataset.itemId;
       const it = items.find(i=>i.id===itemId);
       tr.querySelector('.v-qty').value = it.qtyOrdered;
+      tr.querySelector('.v-qty').dispatchEvent(new Event('input'));
       tr.querySelector('.v-arrived').checked = true;
     });
   });
@@ -759,13 +804,23 @@ function openPoModal(poId){
     await put('pos', po);
 
     const rows = [...tbody.children];
+    const errors = [];
     for(const tr of rows){
       const itemId = tr.dataset.itemId;
       const item = ITEMS.find(i=>i.id===itemId);
       if(!item) continue;
-      item.qtyReceived = Number(tr.querySelector('.v-qty').value)||0;
+      const upc = Number(tr.querySelector('.v-upc').value)||0;
+      const rawQty = tr.querySelector('.v-qty').value;
+      const parsed = parseQtyInput(rawQty, upc);
+      if(parsed.error){ errors.push(`${item.name}: ${parsed.error}`); continue; }
+      item.unitsPerCarton = upc || null;
+      item.qtyReceivedRaw = rawQty;
+      item.qtyReceived = parsed.pcs;
       item.arrived = tr.querySelector('.v-arrived').checked;
       await put('items', item);
+    }
+    if(errors.length){
+      alert('Some rows could not be saved:\n' + errors.join('\n'));
     }
     await loadAll();
     renderDashboard();
