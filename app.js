@@ -1,6 +1,12 @@
-/* ---------- IndexedDB helper ---------- */
-const DB_NAME = 'kendari-fulfillment';
-const DB_VERSION = 2;
+/* ---------- Firestore helper ---------- */
+const firebaseConfig = {
+  apiKey: "AIzaSyDJfuwjFVNrONY4P4eVah9R5ij8jWngW00",
+  authDomain: "dsbrdkdi.firebaseapp.com",
+  projectId: "dsbrdkdi",
+  storageBucket: "dsbrdkdi.firebasestorage.app",
+  messagingSenderId: "912455569910",
+  appId: "1:912455569910:web:1d1a68c917da4d0331b7d7"
+};
 let db;
 
 function showFatalError(message){
@@ -16,48 +22,34 @@ function showFatalError(message){
 
 function openDB(){
   return new Promise((resolve, reject)=>{
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = (e)=>{
-      const d = e.target.result;
-      if(!d.objectStoreNames.contains('stores')){
-        d.createObjectStore('stores', {keyPath:'id'});
-      }
-      if(!d.objectStoreNames.contains('pos')){
-        d.createObjectStore('pos', {keyPath:'id'});
-      }
-      if(!d.objectStoreNames.contains('items')){
-        const s = d.createObjectStore('items', {keyPath:'id'});
-        s.createIndex('poId', 'poId', {unique:false});
-      }
-      if(!d.objectStoreNames.contains('aliases')){
-        const a = d.createObjectStore('aliases', {keyPath:'id'});
-        a.createIndex('barcode', 'barcode', {unique:true});
-      }
-    };
-    req.onblocked = ()=>{
-      showFatalError('⚠️ This app is open in another tab/window and needs to update its storage. Close every other tab of this app, then reload this page.');
-    };
-    req.onsuccess = (e)=>{ db = e.target.result; resolve(db); };
-    req.onerror = (e)=> reject(e);
+    try{
+      if(!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+      db = firebase.firestore();
+      resolve(db);
+    } catch(err){ reject(err); }
   });
 }
 
-function tx(storeName, mode='readonly'){
-  return db.transaction(storeName, mode).objectStore(storeName);
-}
-function reqToPromise(req){
-  return new Promise((resolve,reject)=>{
-    req.onsuccess = ()=>resolve(req.result);
-    req.onerror = ()=>reject(req.error);
-  });
-}
-function getAll(storeName){ return reqToPromise(tx(storeName).getAll()); }
-function put(storeName, val){ return reqToPromise(tx(storeName,'readwrite').put(val)); }
-function del(storeName, id){ return reqToPromise(tx(storeName,'readwrite').delete(id)); }
-function getByIndex(storeName, indexName, value){
-  return reqToPromise(tx(storeName).index(indexName).getAll(value));
-}
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+
+async function getAll(storeName){
+  const snap = await db.collection(storeName).get();
+  return snap.docs.map(d=>({id:d.id, ...d.data()}));
+}
+async function put(storeName, val){
+  const id = val.id || uid();
+  const rest = {...val};
+  delete rest.id;
+  await db.collection(storeName).doc(id).set(rest);
+  return id;
+}
+async function del(storeName, id){
+  await db.collection(storeName).doc(id).delete();
+}
+async function getByIndex(storeName, indexName, value){
+  const snap = await db.collection(storeName).where(indexName, '==', value).get();
+  return snap.docs.map(d=>({id:d.id, ...d.data()}));
+}
 
 /* ---------- App state ---------- */
 let STORES = [];
@@ -1094,9 +1086,47 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+/* ---------- Passcode gate ---------- */
+const APP_PASSCODE = 'NFI2026';
+const PASSCODE_SESSION_KEY = 'kdi-passcode-ok';
+
+function requirePasscode(){
+  return new Promise((resolve)=>{
+    if(sessionStorage.getItem(PASSCODE_SESSION_KEY) === '1'){ resolve(); return; }
+    const overlay = document.createElement('div');
+    overlay.id = 'passcodeOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:1000;background:#1a1a1a;display:flex;align-items:center;justify-content:center;font-family:sans-serif;';
+    overlay.innerHTML = `
+      <form id="passcodeForm" style="background:#fff;padding:28px 32px;border-radius:10px;min-width:280px;box-shadow:0 10px 30px rgba(0,0,0,.3);">
+        <div style="font-size:16px;font-weight:600;margin-bottom:12px;">Enter access code</div>
+        <input id="passcodeInput" type="password" autocomplete="off" style="width:100%;padding:10px;font-size:14px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;" />
+        <div id="passcodeError" style="color:#e0453d;font-size:13px;margin-top:8px;min-height:18px;"></div>
+        <button type="submit" style="margin-top:10px;width:100%;padding:10px;font-size:14px;border:none;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer;">Enter</button>
+      </form>`;
+    document.body.appendChild(overlay);
+    const form = overlay.querySelector('#passcodeForm');
+    const input = overlay.querySelector('#passcodeInput');
+    const errorEl = overlay.querySelector('#passcodeError');
+    input.focus();
+    form.addEventListener('submit', (e)=>{
+      e.preventDefault();
+      if(input.value === APP_PASSCODE){
+        sessionStorage.setItem(PASSCODE_SESSION_KEY, '1');
+        overlay.remove();
+        resolve();
+      } else {
+        errorEl.textContent = 'Incorrect code, try again.';
+        input.value = '';
+        input.focus();
+      }
+    });
+  });
+}
+
 /* ---------- Init ---------- */
 (async function init(){
   try{
+    await requirePasscode();
     await openDB();
     await loadAll();
     renderDashboard();

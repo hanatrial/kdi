@@ -1,6 +1,6 @@
 # Kendari Fulfillment Dashboard
 
-A local-first web app for tracking distributor purchase orders and delivery fulfillment.
+A web app for tracking distributor purchase orders and delivery fulfillment, with data synced online via Firebase.
 
 ## Features
 
@@ -12,8 +12,8 @@ A local-first web app for tracking distributor purchase orders and delivery fulf
 
 ## Running it
 
-No build step, no server required — open [index.html](index.html) directly in a browser. Data is stored locally in the browser via IndexedDB.
+No build step required. Hosted via GitHub Pages at https://hanatrial.github.io/kdi/, or open [index.html](index.html) directly in a browser. Data is stored in Firebase Firestore (project `dsbrdkdi`) and synced across devices. On first load, the app asks for a shared access passcode (app-level gate; Firestore rules are open since there's no user auth).
 
 ## Tech
 
-Plain HTML/CSS/JS. Uses [pdf.js](https://mozilla.github.io/pdf.js/) (PDF text extraction), [Tesseract.js](https://tesseract.projectnaptha.com/) (OCR for photo POs), and [SheetJS](https://sheetjs.com/) (Excel/CSV import) loaded from CDN on demand.
+Plain HTML/CSS/JS. Uses [pdf.js](https://mozilla.github.io/pdf.js/) (PDF text extraction), [Tesseract.js](https://tesseract.projectnaptha.com/) (OCR for photo POs), [SheetJS](https://sheetjs.com/) (Excel/CSV import) loaded from CDN on demand, and the [Firebase](https://firebase.google.com/) Firestore compat SDK for data storage.
