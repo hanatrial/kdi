@@ -56,6 +56,7 @@ let STORES = [];
 let POS = [];
 let ITEMS = [];
 let ALIASES = []; // {id, barcode, distName} — remembers which distributor product name matches a barcode
+let CARTON_SIZES = []; // {id, key, unitsPerCarton} — remembers units/carton per product (by barcode, or name if no barcode)
 let newPoItemRowCount = 0;
 let newPoFileData = null; // {name, type, dataUrl}
 
@@ -64,6 +65,26 @@ async function loadAll(){
   POS = await getAll('pos');
   ITEMS = await getAll('items');
   ALIASES = await getAll('aliases');
+  CARTON_SIZES = await getAll('cartonSizes');
+}
+
+function cartonSizeKey(item){
+  return item.barcode ? ('bc:'+item.barcode) : ('nm:'+String(item.name||'').trim().toLowerCase());
+}
+
+function getRememberedCartonSize(item){
+  const key = cartonSizeKey(item);
+  const rec = CARTON_SIZES.find(c=>c.key===key);
+  return rec ? rec.unitsPerCarton : null;
+}
+
+async function rememberCartonSize(item, unitsPerCarton){
+  if(!unitsPerCarton || unitsPerCarton<=0) return;
+  const key = cartonSizeKey(item);
+  const existing = CARTON_SIZES.find(c=>c.key===key);
+  if(existing && existing.unitsPerCarton===unitsPerCarton) return;
+  const record = existing ? {...existing, unitsPerCarton} : {id: uid(), key, unitsPerCarton};
+  await put('cartonSizes', record);
 }
 
 function getAliasDistName(barcode){
@@ -732,7 +753,7 @@ function openPoModal(poId){
     <div style="margin-bottom:10px;">
       <button type="button" class="btn secondary small" id="fillAllOrdered">Fill all as ordered</button>
     </div>
-    <p class="step-hint">Received accepts pcs (e.g. <code>24</code>) or cartons (e.g. <code>1Q</code> / <code>1ctn</code>) — cartons convert using "Units/ctn" for that item, which is guessed from the item name but editable.</p>
+    <p class="step-hint">Received accepts pcs (e.g. <code>24</code>) or cartons (e.g. <code>1Q</code> / <code>1ctn</code>) — cartons convert using "Units/ctn" for that item. Fill it in once per product and it's remembered automatically next time (matched by barcode, or name if there's no barcode).</p>
     <div class="table-scroll">
     <table class="data-table">
       <thead><tr><th>Item</th><th>Barcode</th><th>Ordered</th><th>Units/ctn</th><th>Received</th><th>= pcs</th><th>Arrived</th></tr></thead>
@@ -750,7 +771,7 @@ function openPoModal(poId){
   const tbody = body.querySelector('#validateRows');
 
   items.forEach(it=>{
-    const upc = it.unitsPerCarton || guessUnitsPerCarton(it.name) || '';
+    const upc = it.unitsPerCarton || getRememberedCartonSize(it) || guessUnitsPerCarton(it.name) || '';
     const tr = document.createElement('tr');
     tr.className = 'validate-row';
     tr.dataset.itemId = it.id;
@@ -816,6 +837,7 @@ function openPoModal(poId){
       item.unitsPerCarton = upc || null;
       item.qtyReceivedRaw = rawQty;
       item.qtyReceived = parsed.pcs;
+      await rememberCartonSize(item, upc);
       item.arrived = tr.querySelector('.v-arrived').checked;
       await put('items', item);
     }
