@@ -126,9 +126,10 @@ function storeName(id){
 
 /* ---------- Carton/pcs qty parsing ---------- */
 // Guesses units-per-carton from a pack-size hint in the item name, e.g.
-// "HI LO SCHOOL CHOCOLATE 12DX250G" -> 12 (12 x 250g per dus/carton).
+// "HI LO SCHOOL CHOCOLATE 12DX250G" -> 12 (12 x 250g per dus/carton),
+// "HI LO ACTIVE BELGIAN CHOCOLATE 8GUSX10SX30G" -> 8, "...24TPKX200ML" -> 24.
 function guessUnitsPerCarton(name){
-  const m = String(name||'').match(/(\d+)\s*DX/i);
+  const m = String(name||'').match(/(\d+)\s*(DX|GUS|TPK)/i);
   return m ? Number(m[1]) : null;
 }
 
