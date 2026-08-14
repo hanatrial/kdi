@@ -1086,7 +1086,7 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-/* ---------- Passcode gate ---------- */
+/* ---------- Auth gate (Google sign-in) ---------- */
 const APP_PASSCODE = 'NFI2026';
 const PASSCODE_SESSION_KEY = 'kdi-passcode-ok';
 
