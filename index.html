@@ -132,8 +132,8 @@
           <div class="form-row">
             <label class="upload-label">Upload PO file (PDF or photo)
               <div class="upload-box" id="uploadBox">
-                <input type="file" id="poFile" accept="application/pdf,image/*">
-                <span id="uploadHint">Click to choose a file, or drag one here</span>
+                <input type="file" id="poFile" accept="application/pdf,image/*" multiple>
+                <span id="uploadHint">Click to choose one or more files (e.g. multiple PO pages)</span>
               </div>
             </label>
             <div id="poFilePreview" class="file-preview"></div>
@@ -256,6 +256,6 @@
 </div>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
-<script src="app.js?v=14"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>

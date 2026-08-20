@@ -58,7 +58,7 @@ let ITEMS = [];
 let ALIASES = []; // {id, barcode, distName} — remembers which distributor product name matches a barcode
 let CARTON_SIZES = []; // {id, key, unitsPerCarton} — remembers units/carton per product (by barcode, or name if no barcode)
 let newPoItemRowCount = 0;
-let newPoFileData = null; // {name, type, dataUrl}
+let newPoFileData = []; // [{name, type, dataUrl}, ...]
 
 async function loadAll(){
   STORES = await getAll('stores');
@@ -245,12 +245,12 @@ function renderNewPoForm(){
   document.getElementById('itemRows').innerHTML = '';
   document.getElementById('poFilePreview').innerHTML = '';
   document.getElementById('poFile').value = '';
-  document.getElementById('uploadHint').textContent = 'Click to choose a file, or drag one here';
+  document.getElementById('uploadHint').textContent = 'Click to choose one or more files (e.g. multiple PO pages)';
   document.getElementById('autoExtractRow').style.display = 'none';
   document.getElementById('autoExtractStatus').textContent = '';
   document.getElementById('pasteItemsInput').value = '';
   document.getElementById('pasteItemsStatus').textContent = '';
-  newPoFileData = null;
+  newPoFileData = [];
   newPoItemRowCount = 0;
   addItemRow();
   document.getElementById('newStoreInline').style.display = 'none';
@@ -399,26 +399,35 @@ document.getElementById('pasteItemsParse').addEventListener('click', ()=>{
   statusEl.textContent = `Filled ${parsed.length} item row(s) from the pasted list.`;
 });
 
-document.getElementById('poFile').addEventListener('change', (e)=>{
-  const file = e.target.files[0];
+function readFileAsDataUrl(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=> resolve(reader.result);
+    reader.onerror = ()=> reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+document.getElementById('poFile').addEventListener('change', async (e)=>{
+  const files = [...e.target.files];
   const preview = document.getElementById('poFilePreview');
   const extractRow = document.getElementById('autoExtractRow');
   const extractStatus = document.getElementById('autoExtractStatus');
-  extractStatus.textContent = '';
-  if(!file){ preview.innerHTML=''; newPoFileData=null; extractRow.style.display='none'; return; }
   const hint = document.getElementById('uploadHint');
-  const reader = new FileReader();
-  reader.onload = ()=>{
-    newPoFileData = {name:file.name, type:file.type, dataUrl:reader.result};
-    hint.textContent = '✓ ' + file.name;
-    if(file.type.startsWith('image/')){
-      preview.innerHTML = `<img class="thumb" src="${reader.result}">`;
-    } else {
-      preview.innerHTML = `📄 ${escapeHtml(file.name)}`;
-    }
-    extractRow.style.display = 'flex';
-  };
-  reader.readAsDataURL(file);
+  extractStatus.textContent = '';
+
+  if(files.length===0){ preview.innerHTML=''; newPoFileData=[]; extractRow.style.display='none'; return; }
+
+  const dataUrls = await Promise.all(files.map(f=>readFileAsDataUrl(f)));
+  newPoFileData = files.map((f,i)=>({name:f.name, type:f.type, dataUrl:dataUrls[i]}));
+
+  hint.textContent = files.length===1 ? ('✓ ' + files[0].name) : `✓ ${files.length} files selected`;
+  preview.innerHTML = newPoFileData.map(f=>
+    f.type.startsWith('image/')
+      ? `<img class="thumb" src="${f.dataUrl}" style="max-width:140px;margin:4px;">`
+      : `<span style="display:inline-block;margin:4px;">📄 ${escapeHtml(f.name)}</span>`
+  ).join('');
+  extractRow.style.display = 'flex';
 });
 
 /* ---------- Auto-extract items from uploaded PO file ---------- */
@@ -586,36 +595,42 @@ function parseItemsFromText(text){
 }
 
 document.getElementById('autoExtractBtn').addEventListener('click', async ()=>{
-  if(!newPoFileData){ return; }
+  if(!newPoFileData || newPoFileData.length===0){ return; }
   const statusEl = document.getElementById('autoExtractStatus');
   const btn = document.getElementById('autoExtractBtn');
   btn.disabled = true;
   try{
-    let text;
-    if(newPoFileData.type === 'application/pdf'){
-      statusEl.textContent = 'Reading PDF…';
-      text = await extractTextFromPdf(newPoFileData.dataUrl);
-    } else {
-      statusEl.textContent = 'Running OCR on photo… this can take a while';
-      text = await extractTextFromImage(newPoFileData.dataUrl, pct=>{
-        statusEl.textContent = `Running OCR on photo… ${pct}%`;
-      });
+    const allItems = [];
+    for(let i=0; i<newPoFileData.length; i++){
+      const f = newPoFileData[i];
+      const filePrefix = newPoFileData.length>1 ? `File ${i+1}/${newPoFileData.length}: ` : '';
+      let text;
+      if(f.type === 'application/pdf'){
+        statusEl.textContent = filePrefix + 'Reading PDF…';
+        text = await extractTextFromPdf(f.dataUrl);
+      } else {
+        statusEl.textContent = filePrefix + 'Running OCR on photo… this can take a while';
+        text = await extractTextFromImage(f.dataUrl, pct=>{
+          statusEl.textContent = `${filePrefix}Running OCR on photo… ${pct}%`;
+        });
+      }
+      allItems.push(...parseItemsFromText(text));
     }
-    const items = parseItemsFromText(text);
-    if(items.length===0){
+    if(allItems.length===0){
       statusEl.textContent = 'Could not detect item rows automatically — please add them manually below.';
     } else {
       const tbody = document.getElementById('itemRows');
       tbody.innerHTML = '';
       newPoItemRowCount = 0;
-      items.forEach(it=>{
+      allItems.forEach(it=>{
         addItemRow();
         const tr = tbody.lastElementChild;
         tr.querySelector('.item-name').value = it.name;
         tr.querySelector('.item-barcode').value = it.barcode;
         tr.querySelector('.item-qty').value = it.qty;
       });
-      statusEl.textContent = `Extracted ${items.length} item(s) — please double-check names, barcodes and quantities before saving.`;
+      const fileNote = newPoFileData.length>1 ? ` across ${newPoFileData.length} files` : '';
+      statusEl.textContent = `Extracted ${allItems.length} item(s)${fileNote} — please double-check names, barcodes and quantities before saving.`;
     }
   } catch(err){
     console.error(err);
@@ -641,13 +656,23 @@ document.getElementById('poForm').addEventListener('submit', async (e)=>{
 
   if(items.length===0){ alert('Add at least one item with a quantity.'); return; }
 
+  // Firestore documents cap out at 1MB; base64-encoded photos (especially more than one)
+  // blow past that easily and would otherwise fail the save silently.
+  const totalFileBytes = (newPoFileData||[]).reduce((sum,f)=>sum + (f.dataUrl?.length||0), 0);
+  const FIRESTORE_SAFE_BYTES = 700000;
+  let fileToSave = newPoFileData;
+  if(totalFileBytes > FIRESTORE_SAFE_BYTES){
+    fileToSave = [];
+    alert(`The attached file(s) are too large to store (${Math.round(totalFileBytes/1024)}KB, limit ~${Math.round(FIRESTORE_SAFE_BYTES/1024)}KB) — saving the PO and its items without the attached photo(s)/PDF. The extracted items are unaffected.`);
+  }
+
   const poId = uid();
   await put('pos', {
     id: poId,
     storeId,
     orderDate,
     ref,
-    file: newPoFileData,
+    file: fileToSave,
     deliveredDate: '',
     createdAt: Date.now()
   });
@@ -764,12 +789,14 @@ function openPoModal(poId){
   const body = document.getElementById('poModalBody');
 
   let fileHtml = '';
-  if(po.file){
-    if(po.file.type && po.file.type.startsWith('image/')){
-      fileHtml = `<a href="${po.file.dataUrl}" target="_blank"><img class="thumb" src="${po.file.dataUrl}"></a>`;
-    } else {
-      fileHtml = `<a href="${po.file.dataUrl}" download="${escapeHtml(po.file.name)}">📄 ${escapeHtml(po.file.name)} (open/download)</a>`;
-    }
+  // po.file may be an array (current) or a single object (older POs saved before multi-file support).
+  const poFiles = Array.isArray(po.file) ? po.file : (po.file ? [po.file] : []);
+  if(poFiles.length>0){
+    fileHtml = poFiles.map(f=>
+      (f.type && f.type.startsWith('image/'))
+        ? `<a href="${f.dataUrl}" target="_blank"><img class="thumb" src="${f.dataUrl}" style="max-width:160px;margin:4px;"></a>`
+        : `<a href="${f.dataUrl}" download="${escapeHtml(f.name)}" style="display:inline-block;margin:4px;">📄 ${escapeHtml(f.name)} (open/download)</a>`
+    ).join('');
   }
 
   body.innerHTML = `
