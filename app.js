@@ -679,16 +679,24 @@ function parseTemplateStyle(text){
   return items;
 }
 
+/* Imports keep only Nutrifood products: HiLo, Tropicana, L-Men, NutriSari.
+   Everything else on a mixed distributor sheet (Sensodyne, Kispray, Morin, Asepso,
+   Adem Sari, Soffell, Etawaku, …) is dropped. Digits are folded back to letters first
+   so OCR noise like "H1L0" / "TROP1CANA" still matches. */
+function isNutrifoodProduct(name){
+  const n = String(name||'').toUpperCase()
+    .replace(/[1|!]/g,'I')
+    .replace(/0/g,'O')
+    .replace(/5/g,'S');
+  return /\bHI\s*-?\s*LO|\bTROPICANA|\bL\s*-?\s*MEN\b|\bNUTRI\s*-?\s*SARI/.test(n);
+}
+
 /* "Nama Barang" style photo list (e.g. PT. Matakar Kendari internal PO sheets):
    columns are  No# | <code>/<Nama Barang> | Unit | Quantity | Keterangan
    e.g. "013  0060065 /HILO ACTIVE COKLAT 750 GR   PCS   6,00"
-   Only keeps rows whose product name starts with a target brand (HILO, TROPICANA,
-   L-MEN, NUTRISARI, DIABETAMIL) per the user's request. For HILO/TROPICANA/L-MEN/
-   NUTRISARI, converts the printed pack qty to individual pieces (LUSIN=12,
-   DOS/KRT/CRT=24); Diabetamil and any other unit (e.g. PCS) is kept as printed. */
-const NB_CONVERTIBLE_BRAND_RE = /^(HILO|TROPICANA|L-?MEN|NUTRI\s*SARI|NUTRISARI)\b/i;
-const NB_TARGET_BRAND_RE = /^(H[I1]LO|TROP[I1]CANA|L-?MEN|NUTR[I1]\s*SAR[I1]|D[I1]ABETAM[I1]L)\b/i;
-const NB_PACK_MULTIPLIER = { LUSIN:12, LUSlN:12, DOS:24, KRT:24, CRT:24, DUS:24 };
+   Pack quantities are converted to individual pieces (LUSIN=12, DOS/KRT/CRT=24);
+   PCS and any other unit is kept as printed. */
+const NB_PACK_MULTIPLIER = { LUSIN:12, DOS:24, KRT:24, CRT:24, DUS:24 };
 
 // Digits misread as letters is the single most common OCR failure on these sheets.
 function digitsOnly(s){
@@ -739,15 +747,12 @@ function parseNamaBarangStyle(text){
     const code = digitsOnly(m[1]);
     if(code.length < 4) continue;
     const name = cleanNbName(m[2]);
-    if(!NB_TARGET_BRAND_RE.test(name)) continue;
+    if(!isNutrifoodProduct(name)) continue;
     const unit = normalizeUnit(m[3]);
     const packQty = parseNbQty(m[4]);
     if(packQty===null || packQty<=0 || packQty>500) continue;
 
-    let qty = packQty;
-    if(NB_CONVERTIBLE_BRAND_RE.test(name)){
-      qty = packQty * (NB_PACK_MULTIPLIER[unit] || 1);
-    }
+    const qty = packQty * (NB_PACK_MULTIPLIER[unit] || 1);
     items.push({name, barcode: code, qty: Math.round(qty)});
   }
   return items;
@@ -792,11 +797,13 @@ function parseGenericStyle(text){
 }
 
 function parseItemsFromText(text){
-  const templateItems = parseTemplateStyle(text);
-  if(templateItems.length>=2) return templateItems;
-  const namaBarangItems = parseNamaBarangStyle(text);
-  if(namaBarangItems.length>=2) return namaBarangItems;
-  return parseGenericStyle(text);
+  // Pick the layout by how many rows it recognises, then keep only Nutrifood products.
+  // (Filtering after format detection, not before, so a mostly-non-Nutrifood sheet
+  // still gets parsed with the right layout rather than falling through to a weaker one.)
+  let items = parseTemplateStyle(text);
+  if(items.length < 2) items = parseNamaBarangStyle(text);
+  if(items.length < 2) items = parseGenericStyle(text);
+  return items.filter(it=>isNutrifoodProduct(it.name));
 }
 
 /* ---------- Ensemble merge across OCR passes ----------
