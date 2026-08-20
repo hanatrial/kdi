@@ -509,6 +509,36 @@ function parseTemplateStyle(text){
   return items;
 }
 
+/* "Nama Barang" style photo list (e.g. PT. Matakar Kendari internal PO sheets):
+   columns are  No# | <code>/<Nama Barang> | Unit | Quantity | Keterangan
+   e.g. "013  0060065 /HILO ACTIVE COKLAT 750 GR   PCS   6,00"
+   Only keeps rows whose product name starts with a target brand (HILO, TROPICANA,
+   L-MEN, NUTRISARI, DIABETAMIL) per the user's request. For HILO/TROPICANA/L-MEN/
+   NUTRISARI, converts the printed pack qty to individual pieces (LUSIN=12,
+   DOS/KRT/CRT=24); Diabetamil and any other unit (e.g. PCS) is kept as printed. */
+const NB_CONVERTIBLE_BRAND_RE = /^(HILO|TROPICANA|L-?MEN|NUTRI\s*SARI|NUTRISARI)\b/i;
+const NB_TARGET_BRAND_RE = /^(HILO|TROPICANA|L-?MEN|NUTRI\s*SARI|NUTRISARI|DIABETAMIL)\b/i;
+const NB_PACK_MULTIPLIER = { LUSIN:12, DOS:24, KRT:24, CRT:24 };
+
+function parseNamaBarangStyle(text){
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const items = [];
+  for(const line of lines){
+    const m = line.match(/^\d{1,4}[.)]?\s+(\d{4,10})\s*[\/|]\s*(.+?)\s+([A-Z]{2,6})\s+([\d.,]+)\s*$/);
+    if(!m) continue;
+    const [, code, rawName, unit, qtyRaw] = m;
+    const name = rawName.trim();
+    if(!NB_TARGET_BRAND_RE.test(name)) continue;
+    let qty = parseFloat(qtyRaw.replace(',', '.'));
+    if(!qty || qty<=0) continue;
+    if(NB_CONVERTIBLE_BRAND_RE.test(name)){
+      qty = qty * (NB_PACK_MULTIPLIER[unit.toUpperCase()] || 1);
+    }
+    items.push({name, barcode: code, qty: Math.round(qty)});
+  }
+  return items;
+}
+
 function parseGenericStyle(text){
   const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
   const skipPattern = /^(no\.?|item|barcode|qty|quantity|jumlah|total|subtotal|tanggal|date|halaman|page|keterangan|catatan|alamat|npwp|nama|harga|price|discount|diskon)\b.{0,20}$/i;
@@ -550,6 +580,8 @@ function parseGenericStyle(text){
 function parseItemsFromText(text){
   const templateItems = parseTemplateStyle(text);
   if(templateItems.length>=2) return templateItems;
+  const namaBarangItems = parseNamaBarangStyle(text);
+  if(namaBarangItems.length>=2) return namaBarangItems;
   return parseGenericStyle(text);
 }
 
