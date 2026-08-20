@@ -476,9 +476,61 @@ async function extractTextFromPdf(dataUrl){
   return fullText;
 }
 
+/* Upscales + grayscales + contrast-stretches a photo before handing it to OCR.
+   Phone photos of small dense print (glare, low contrast, undersized relative to
+   Tesseract's ideal ~300dpi) are the single biggest cause of missed/misread rows —
+   this measurably helps without needing a server-side image pipeline. */
+function preprocessImageForOcr(dataUrl){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      try{
+        const maxDim = 2400;
+        const upscale = Math.min(Math.max(maxDim / Math.max(img.width, img.height), 1), 3);
+        const w = Math.round(img.width * upscale);
+        const h = Math.round(img.height * upscale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, w, h);
+
+        const imgData = ctx.getImageData(0, 0, w, h);
+        const d = imgData.data;
+        const gray = new Float32Array(w*h);
+        let min = 255, max = 0;
+        for(let i=0, p=0; i<d.length; i+=4, p++){
+          const g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+          gray[p] = g;
+          if(g<min) min = g;
+          if(g>max) max = g;
+        }
+        const range = Math.max(max-min, 1);
+        for(let i=0, p=0; i<d.length; i+=4, p++){
+          const stretched = ((gray[p]-min)/range)*255;
+          d[i] = d[i+1] = d[i+2] = stretched;
+        }
+        ctx.putImageData(imgData, 0, 0);
+        resolve(canvas.toDataURL('image/png'));
+      } catch(err){ reject(err); }
+    };
+    img.onerror = ()=> reject(new Error('Could not load image for preprocessing'));
+    img.src = dataUrl;
+  });
+}
+
 async function extractTextFromImage(dataUrl, onProgress){
   await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js');
-  const result = await Tesseract.recognize(dataUrl, 'eng', {
+  let ocrInput = dataUrl;
+  try{
+    ocrInput = await preprocessImageForOcr(dataUrl);
+  } catch(err){
+    console.warn('Image preprocessing failed, falling back to original photo for OCR', err);
+  }
+  const result = await Tesseract.recognize(ocrInput, 'eng', {
+    tessedit_pageseg_mode: '6', // assume a single uniform block of text — fits a dense item list better than the default "auto" layout guess
+    preserve_interword_spaces: '1',
     logger: m=>{
       if(m.status==='recognizing text' && onProgress) onProgress(Math.round((m.progress||0)*100));
     }
