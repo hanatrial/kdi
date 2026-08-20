@@ -476,66 +476,175 @@ async function extractTextFromPdf(dataUrl){
   return fullText;
 }
 
-/* Upscales + grayscales + contrast-stretches a photo before handing it to OCR.
-   Phone photos of small dense print (glare, low contrast, undersized relative to
-   Tesseract's ideal ~300dpi) are the single biggest cause of missed/misread rows —
-   this measurably helps without needing a server-side image pipeline. */
-function preprocessImageForOcr(dataUrl){
+/* ---------- Photo preprocessing for OCR ----------
+   Phone photos of small dense print are the biggest cause of missed/misread rows.
+   Two renditions are produced and OCR'd separately, because neither wins on every
+   photo: a high-contrast grayscale (safer on clean, evenly lit shots) and a
+   locally-binarized version (much better on glare/shadow/uneven lighting, where a
+   single global threshold blows out whole regions of the page). */
+
+function loadImageEl(dataUrl){
   return new Promise((resolve, reject)=>{
     const img = new Image();
-    img.onload = ()=>{
-      try{
-        const maxDim = 2400;
-        const upscale = Math.min(Math.max(maxDim / Math.max(img.width, img.height), 1), 3);
-        const w = Math.round(img.width * upscale);
-        const h = Math.round(img.height * upscale);
-        const canvas = document.createElement('canvas');
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, 0, 0, w, h);
-
-        const imgData = ctx.getImageData(0, 0, w, h);
-        const d = imgData.data;
-        const gray = new Float32Array(w*h);
-        let min = 255, max = 0;
-        for(let i=0, p=0; i<d.length; i+=4, p++){
-          const g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-          gray[p] = g;
-          if(g<min) min = g;
-          if(g>max) max = g;
-        }
-        const range = Math.max(max-min, 1);
-        for(let i=0, p=0; i<d.length; i+=4, p++){
-          const stretched = ((gray[p]-min)/range)*255;
-          d[i] = d[i+1] = d[i+2] = stretched;
-        }
-        ctx.putImageData(imgData, 0, 0);
-        resolve(canvas.toDataURL('image/png'));
-      } catch(err){ reject(err); }
-    };
+    img.onload = ()=> resolve(img);
     img.onerror = ()=> reject(new Error('Could not load image for preprocessing'));
     img.src = dataUrl;
   });
 }
 
-async function extractTextFromImage(dataUrl, onProgress){
-  await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js');
-  let ocrInput = dataUrl;
-  try{
-    ocrInput = await preprocessImageForOcr(dataUrl);
-  } catch(err){
-    console.warn('Image preprocessing failed, falling back to original photo for OCR', err);
+// Draw upscaled to roughly Tesseract's comfort zone and return {gray,w,h,ctx,canvas}.
+function toUpscaledGray(img, targetLongEdge){
+  const upscale = Math.min(Math.max(targetLongEdge / Math.max(img.width, img.height), 1), 4);
+  const w = Math.round(img.width * upscale);
+  const h = Math.round(img.height * upscale);
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d', {willReadFrequently:true});
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, w, h);
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  const gray = new Float32Array(w*h);
+  for(let i=0, p=0; i<d.length; i+=4, p++){
+    gray[p] = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
   }
-  const result = await Tesseract.recognize(ocrInput, 'eng', {
-    tessedit_pageseg_mode: '6', // assume a single uniform block of text — fits a dense item list better than the default "auto" layout guess
-    preserve_interword_spaces: '1',
+  return {gray, w, h, ctx, canvas, imgData};
+}
+
+function writeGrayToCanvas(values, imgData, ctx){
+  const d = imgData.data;
+  for(let i=0, p=0; i<d.length; i+=4, p++){
+    d[i] = d[i+1] = d[i+2] = values[p];
+    d[i+3] = 255;
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
+/* Sauvola local adaptive threshold via integral images (O(1) per pixel).
+   Unlike a global threshold, this adapts per-region, so a glare patch on one
+   corner of the page doesn't erase the text in that corner. */
+function sauvolaBinarize(gray, w, h, windowSize, k){
+  const iw = w+1;
+  const integral = new Float64Array((w+1)*(h+1));
+  const integralSq = new Float64Array((w+1)*(h+1));
+  for(let y=0; y<h; y++){
+    let rowSum = 0, rowSumSq = 0;
+    for(let x=0; x<w; x++){
+      const v = gray[y*w+x];
+      rowSum += v; rowSumSq += v*v;
+      integral[(y+1)*iw + (x+1)]   = integral[y*iw + (x+1)] + rowSum;
+      integralSq[(y+1)*iw + (x+1)] = integralSq[y*iw + (x+1)] + rowSumSq;
+    }
+  }
+  const out = new Float32Array(w*h);
+  const r = Math.max(1, Math.floor(windowSize/2));
+  const R = 128;
+  for(let y=0; y<h; y++){
+    const y0 = Math.max(0, y-r), y1 = Math.min(h-1, y+r);
+    for(let x=0; x<w; x++){
+      const x0 = Math.max(0, x-r), x1 = Math.min(w-1, x+r);
+      const area = (y1-y0+1)*(x1-x0+1);
+      const sum   = integral[(y1+1)*iw+(x1+1)] - integral[y0*iw+(x1+1)] - integral[(y1+1)*iw+x0] + integral[y0*iw+x0];
+      const sumSq = integralSq[(y1+1)*iw+(x1+1)] - integralSq[y0*iw+(x1+1)] - integralSq[(y1+1)*iw+x0] + integralSq[y0*iw+x0];
+      const mean = sum/area;
+      const variance = Math.max(sumSq/area - mean*mean, 0);
+      const std = Math.sqrt(variance);
+      const threshold = mean * (1 + k*((std/R) - 1));
+      out[y*w+x] = gray[y*w+x] > threshold ? 255 : 0;
+    }
+  }
+  return out;
+}
+
+async function buildOcrRenditions(dataUrl){
+  const img = await loadImageEl(dataUrl);
+  const renditions = [];
+
+  // 1) Contrast-stretched grayscale
+  {
+    const {gray, w, h, ctx, canvas, imgData} = toUpscaledGray(img, 2600);
+    let min = 255, max = 0;
+    for(let i=0;i<gray.length;i++){ if(gray[i]<min) min=gray[i]; if(gray[i]>max) max=gray[i]; }
+    const range = Math.max(max-min, 1);
+    const stretched = new Float32Array(gray.length);
+    for(let i=0;i<gray.length;i++) stretched[i] = ((gray[i]-min)/range)*255;
+    writeGrayToCanvas(stretched, imgData, ctx);
+    renditions.push({label:'grayscale', dataUrl: canvas.toDataURL('image/png')});
+  }
+
+  // 2) Sauvola-binarized — window scaled to image size so it spans a few characters
+  {
+    const {gray, w, h, ctx, canvas, imgData} = toUpscaledGray(img, 2600);
+    const windowSize = Math.max(15, Math.round(Math.max(w,h) / 80) | 1);
+    const binar = sauvolaBinarize(gray, w, h, windowSize, 0.30);
+    writeGrayToCanvas(binar, imgData, ctx);
+    renditions.push({label:'binarized', dataUrl: canvas.toDataURL('image/png')});
+  }
+
+  return renditions;
+}
+
+/* ---------- Multi-pass OCR with ensemble voting ----------
+   One OCR pass on a hard photo is a coin flip on any given row. Running several
+   passes (two image renditions x several page-segmentation modes) and taking a
+   majority vote per row recovers rows that any single pass drops, and corrects
+   digits that a single pass misreads. Slower, but far more reliable. */
+const OCR_PAGE_MODES = [
+  {psm:'6',  label:'uniform block'},
+  {psm:'4',  label:'single column'},
+  {psm:'11', label:'sparse text'}
+];
+
+async function extractTextsFromImage(dataUrl, onProgress){
+  await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js');
+
+  let renditions;
+  try{
+    renditions = await buildOcrRenditions(dataUrl);
+  } catch(err){
+    console.warn('Image preprocessing failed, using original photo', err);
+    renditions = [{label:'original', dataUrl}];
+  }
+
+  const totalPasses = renditions.length * OCR_PAGE_MODES.length;
+  let passIndex = 0;
+  const texts = [];
+
+  const worker = await Tesseract.createWorker('eng', 1, {
     logger: m=>{
-      if(m.status==='recognizing text' && onProgress) onProgress(Math.round((m.progress||0)*100));
+      if(m.status==='recognizing text' && onProgress){
+        const within = (m.progress||0);
+        const overall = ((passIndex + within) / totalPasses) * 100;
+        onProgress(Math.min(99, Math.round(overall)), passIndex+1, totalPasses);
+      }
     }
   });
-  return result.data.text;
+
+  try{
+    for(const rendition of renditions){
+      for(const mode of OCR_PAGE_MODES){
+        await worker.setParameters({
+          tessedit_pageseg_mode: mode.psm,
+          preserve_interword_spaces: '1'
+        });
+        const {data} = await worker.recognize(rendition.dataUrl);
+        texts.push(data.text || '');
+        passIndex++;
+        if(onProgress) onProgress(Math.min(99, Math.round((passIndex/totalPasses)*100)), passIndex, totalPasses);
+      }
+    }
+  } finally {
+    await worker.terminate();
+  }
+
+  return texts;
+}
+
+// Back-compat single-text helper (still used for anything expecting one string).
+async function extractTextFromImage(dataUrl, onProgress){
+  const texts = await extractTextsFromImage(dataUrl, onProgress);
+  return texts.join('\n');
 }
 
 /* "ORDER PEMBELIAN"-style PO template:
@@ -578,22 +687,66 @@ function parseTemplateStyle(text){
    NUTRISARI, converts the printed pack qty to individual pieces (LUSIN=12,
    DOS/KRT/CRT=24); Diabetamil and any other unit (e.g. PCS) is kept as printed. */
 const NB_CONVERTIBLE_BRAND_RE = /^(HILO|TROPICANA|L-?MEN|NUTRI\s*SARI|NUTRISARI)\b/i;
-const NB_TARGET_BRAND_RE = /^(HILO|TROPICANA|L-?MEN|NUTRI\s*SARI|NUTRISARI|DIABETAMIL)\b/i;
-const NB_PACK_MULTIPLIER = { LUSIN:12, DOS:24, KRT:24, CRT:24 };
+const NB_TARGET_BRAND_RE = /^(H[I1]LO|TROP[I1]CANA|L-?MEN|NUTR[I1]\s*SAR[I1]|D[I1]ABETAM[I1]L)\b/i;
+const NB_PACK_MULTIPLIER = { LUSIN:12, LUSlN:12, DOS:24, KRT:24, CRT:24, DUS:24 };
+
+// Digits misread as letters is the single most common OCR failure on these sheets.
+function digitsOnly(s){
+  return String(s).replace(/[OoDQ]/g,'0').replace(/[lIi|!]/g,'1').replace(/[Ss]/g,'5')
+                  .replace(/[Bb]/g,'8').replace(/[Zz]/g,'2').replace(/[^\d]/g,'');
+}
+
+/* Quantities on these sheets are always printed as `N,00`. OCR frequently loses the
+   comma ("1,00" -> "100") or mangles it ("1.00", "1;00", "1 00"), which silently turns
+   a qty of 1 into 100. Recover the intended value rather than trusting the raw digits. */
+function parseNbQty(qtyRaw){
+  const cleaned = String(qtyRaw).replace(/[OoDQ]/g,'0').replace(/[lIi|!]/g,'1').replace(/\s+/g,'');
+  let m = cleaned.match(/^(\d{1,4})[,.;:](\d{2})$/);
+  if(m) return parseFloat(`${m[1]}.${m[2]}`);
+  // Comma dropped entirely: trailing "00" is the lost decimal part.
+  m = cleaned.match(/^(\d{1,4})00$/);
+  if(m) return parseInt(m[1], 10);
+  m = cleaned.match(/^(\d{1,4})$/);
+  if(m) return parseInt(m[1], 10);
+  return null;
+}
+
+function normalizeUnit(rawUnit){
+  const u = String(rawUnit).toUpperCase().replace(/[^A-Z]/g,'')
+             .replace(/^LUS[I1]N$/,'LUSIN').replace(/^D0S$/,'DOS');
+  if(NB_PACK_MULTIPLIER[u]) return u;
+  if(/^LUS/.test(u)) return 'LUSIN';
+  if(/^D[0O]?S$/.test(u) || /^DUS$/.test(u)) return 'DOS';
+  if(/^[KC]RT$/.test(u)) return 'KRT';
+  return u;
+}
+
+function cleanNbName(rawName){
+  return String(rawName)
+    .replace(/^[\s\/|:.,-]+/,'')          // leftover separators from the code column
+    .replace(/[\s\/|:.,-]+$/,'')
+    .replace(/\s{2,}/g,' ')
+    .trim();
+}
 
 function parseNamaBarangStyle(text){
   const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
   const items = [];
   for(const line of lines){
-    const m = line.match(/^\d{1,4}[.)]?\s+(\d{4,10})\s*[\/|]\s*(.+?)\s+([A-Z]{2,6})\s+([\d.,]+)\s*$/);
+    // Tolerant of OCR noise: optional row number, code, separator, name, unit, qty.
+    const m = line.match(/^[^\dA-Za-z]{0,3}(?:\d{1,4}\s*[.)]?\s+)?([\dOoDQlIiSsBbZz]{4,10})\s*[\/|1lI]{1,2}\s*(.+?)\s{1,}([A-Za-z]{2,6})\s{1,}([\dOoDQlIi][\d\sOoDQlIi,.;:]{0,7})\s*$/);
     if(!m) continue;
-    const [, code, rawName, unit, qtyRaw] = m;
-    const name = rawName.trim();
+    const code = digitsOnly(m[1]);
+    if(code.length < 4) continue;
+    const name = cleanNbName(m[2]);
     if(!NB_TARGET_BRAND_RE.test(name)) continue;
-    let qty = parseFloat(qtyRaw.replace(',', '.'));
-    if(!qty || qty<=0) continue;
+    const unit = normalizeUnit(m[3]);
+    const packQty = parseNbQty(m[4]);
+    if(packQty===null || packQty<=0 || packQty>500) continue;
+
+    let qty = packQty;
     if(NB_CONVERTIBLE_BRAND_RE.test(name)){
-      qty = qty * (NB_PACK_MULTIPLIER[unit.toUpperCase()] || 1);
+      qty = packQty * (NB_PACK_MULTIPLIER[unit] || 1);
     }
     items.push({name, barcode: code, qty: Math.round(qty)});
   }
@@ -646,6 +799,88 @@ function parseItemsFromText(text){
   return parseGenericStyle(text);
 }
 
+/* ---------- Ensemble merge across OCR passes ----------
+   Each pass sees the page slightly differently. Union the rows (recovering rows any
+   single pass missed) and majority-vote the name/qty per row (correcting digits a
+   single pass misread). Rows the passes disagreed on are flagged for review. */
+function mostCommon(values){
+  const counts = new Map();
+  values.forEach(v=>counts.set(v, (counts.get(v)||0)+1));
+  let best = values[0], bestCount = 0;
+  counts.forEach((count, v)=>{ if(count>bestCount){ bestCount = count; best = v; } });
+  return {value: best, count: bestCount, distinct: counts.size};
+}
+
+function mergeItemSets(itemSets){
+  const groups = new Map();
+  itemSets.forEach(set=>{
+    // Within one pass the same row shouldn't count twice.
+    const seenInPass = new Set();
+    set.forEach(it=>{
+      const key = it.barcode || normalizeName(it.name);
+      if(!key || seenInPass.has(key)) return;
+      seenInPass.add(key);
+      if(!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(it);
+    });
+  });
+
+  const merged = [];
+  groups.forEach((occurrences, key)=>{
+    const nameVote = mostCommon(occurrences.map(o=>o.name));
+    const qtyVote  = mostCommon(occurrences.map(o=>o.qty));
+    merged.push({
+      name: nameVote.value,
+      barcode: occurrences.find(o=>o.barcode)?.barcode || '',
+      qty: qtyVote.value,
+      passes: occurrences.length,
+      totalPasses: itemSets.length,
+      uncertain: qtyVote.distinct > 1 || nameVote.distinct > 1 || occurrences.length < Math.ceil(itemSets.length/2)
+    });
+  });
+  return merged;
+}
+
+/* ---------- Catalog correction ----------
+   Every item ever saved becomes reference data. When a later photo's OCR garbles a
+   product name but reads its code, the exact stored name is restored (and vice versa).
+   This is why accuracy improves the more POs you enter. */
+function buildProductCatalog(){
+  const byCode = new Map();
+  const byName = new Map();
+  ITEMS.forEach(it=>{
+    if(it.barcode && it.name && !byCode.has(it.barcode)) byCode.set(it.barcode, it.name);
+    const key = normalizeName(it.name);
+    if(key && it.barcode && !byName.has(key)) byName.set(key, {name: it.name, barcode: it.barcode});
+  });
+  return {byCode, byName};
+}
+
+function applyCatalogCorrections(items){
+  const {byCode, byName} = buildProductCatalog();
+  let nameFixes = 0, codeFixes = 0;
+  const corrected = items.map(it=>{
+    const out = {...it};
+    if(out.barcode && byCode.has(out.barcode)){
+      const known = byCode.get(out.barcode);
+      if(normalizeName(known) !== normalizeName(out.name)){ out.name = known; nameFixes++; }
+      return out;
+    }
+    // No code match — try to recognise the product by name instead.
+    let best = null, bestScore = 0;
+    byName.forEach((entry, key)=>{
+      const score = fuzzyScore(out.name, entry.name);
+      if(score > bestScore){ bestScore = score; best = entry; }
+    });
+    if(best && bestScore >= 0.6){
+      if(normalizeName(best.name) !== normalizeName(out.name)){ out.name = best.name; nameFixes++; }
+      if(!out.barcode){ out.barcode = best.barcode; codeFixes++; }
+    }
+    return out;
+  });
+  return {items: corrected, nameFixes, codeFixes};
+}
+
 document.getElementById('autoExtractBtn').addEventListener('click', async ()=>{
   if(!newPoFileData || newPoFileData.length===0){ return; }
   const statusEl = document.getElementById('autoExtractStatus');
@@ -656,33 +891,46 @@ document.getElementById('autoExtractBtn').addEventListener('click', async ()=>{
     for(let i=0; i<newPoFileData.length; i++){
       const f = newPoFileData[i];
       const filePrefix = newPoFileData.length>1 ? `File ${i+1}/${newPoFileData.length}: ` : '';
-      let text;
       if(f.type === 'application/pdf'){
         statusEl.textContent = filePrefix + 'Reading PDF…';
-        text = await extractTextFromPdf(f.dataUrl);
+        const text = await extractTextFromPdf(f.dataUrl);
+        allItems.push(...parseItemsFromText(text).map(it=>({...it, passes:1, totalPasses:1, uncertain:false})));
       } else {
-        statusEl.textContent = filePrefix + 'Running OCR on photo… this can take a while';
-        text = await extractTextFromImage(f.dataUrl, pct=>{
-          statusEl.textContent = `${filePrefix}Running OCR on photo… ${pct}%`;
+        statusEl.textContent = filePrefix + 'Preparing photo for OCR…';
+        const texts = await extractTextsFromImage(f.dataUrl, (pct, pass, total)=>{
+          statusEl.textContent = `${filePrefix}Reading photo — pass ${pass||1} of ${total||'?'} (${pct}%)… this takes a while, it reads the page several ways for accuracy.`;
         });
+        const perPassItems = texts.map(t=>parseItemsFromText(t));
+        allItems.push(...mergeItemSets(perPassItems));
       }
-      allItems.push(...parseItemsFromText(text));
     }
-    if(allItems.length===0){
-      statusEl.textContent = 'Could not detect item rows automatically — please add them manually below.';
+
+    const {items: finalItems, nameFixes} = applyCatalogCorrections(allItems);
+
+    if(finalItems.length===0){
+      statusEl.textContent = 'Could not detect item rows automatically — please add them manually below, or use the paste-a-list box.';
     } else {
       const tbody = document.getElementById('itemRows');
       tbody.innerHTML = '';
       newPoItemRowCount = 0;
-      allItems.forEach(it=>{
+      finalItems.forEach(it=>{
         addItemRow();
         const tr = tbody.lastElementChild;
         tr.querySelector('.item-name').value = it.name;
         tr.querySelector('.item-barcode').value = it.barcode;
         tr.querySelector('.item-qty').value = it.qty;
+        if(it.uncertain){
+          tr.classList.add('ocr-uncertain');
+          tr.title = `OCR passes disagreed on this row (seen in ${it.passes} of ${it.totalPasses} passes) — please verify against the photo.`;
+        }
       });
+      const uncertainCount = finalItems.filter(i=>i.uncertain).length;
       const fileNote = newPoFileData.length>1 ? ` across ${newPoFileData.length} files` : '';
-      statusEl.textContent = `Extracted ${allItems.length} item(s)${fileNote} — please double-check names, barcodes and quantities before saving.`;
+      const fixNote = nameFixes ? ` ${nameFixes} name(s) corrected from previously saved items.` : '';
+      const warnNote = uncertainCount
+        ? ` ⚠️ ${uncertainCount} row(s) highlighted in amber — the OCR passes disagreed there, check those against the photo first.`
+        : '';
+      statusEl.textContent = `Extracted ${finalItems.length} item(s)${fileNote}.${fixNote}${warnNote} Always double-check quantities before saving.`;
     }
   } catch(err){
     console.error(err);

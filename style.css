@@ -191,6 +191,8 @@ h3{font-size:0.95rem;font-weight:700;margin:22px 0 10px;}
 .badge.partial{background:var(--amber-soft);color:var(--amber);}
 .badge.none{background:var(--red-soft);color:var(--red);}
 .badge.guess{background:var(--amber-soft);color:var(--amber);margin-left:4px;}
+.ocr-uncertain td{background:var(--amber-soft);}
+.ocr-uncertain td:first-child{box-shadow:inset 3px 0 0 var(--amber);}
 .manual-pick{margin-top:6px;font-size:0.78rem;max-width:220px;padding:4px 6px;}
 
 .paste-items-box{border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;background:var(--bg);}
